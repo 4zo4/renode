@@ -23,12 +23,14 @@ struct Protocol
     this->peripheralIndex = peripheralIndex;
   }
 
-  int actionId;
+  int32_t  actionId;
   uint64_t addr;
   uint64_t value;
-  int peripheralIndex;
+  int32_t  peripheralIndex;
 };
 #pragma pack(pop)
+
+static_assert(sizeof(Protocol) == 24, "Protocol struct padding error");
 
 enum Action
 {

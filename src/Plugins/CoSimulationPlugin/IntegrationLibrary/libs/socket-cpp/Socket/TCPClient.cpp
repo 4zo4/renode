@@ -4,6 +4,12 @@
 * @author Mohamed Amine Mzoughi <mohamed-amine.mzoughi@laposte.net>
 */
 
+#ifndef WINDOWS
+#include <fcntl.h>
+#include <netinet/tcp.h>
+#else
+#include <winsock2.h>
+#endif
 #include "TCPClient.h"
 
 CTCPClient::CTCPClient(const LogFnCallback oLogger,
@@ -11,7 +17,8 @@ CTCPClient::CTCPClient(const LogFnCallback oLogger,
    ASocket(oLogger, eSettings),
    m_eStatus(DISCONNECTED),
    m_ConnectSocket(INVALID_SOCKET),
-   m_pResultAddrInfo(nullptr)
+   m_pResultAddrInfo(nullptr),
+   m_bPeek(false)
    //m_uRetryCount(0),
    //m_uRetryPeriod(0)
 {
@@ -107,7 +114,7 @@ bool CTCPClient::Connect(const std::string& strServer, const std::string& strPor
    #ifdef WINDOWS
    ZeroMemory(&m_HintsAddrInfo, sizeof(m_HintsAddrInfo));
    /* AF_INET is used to specify the IPv4 address family. */
-   m_HintsAddrInfo.ai_family = AF_INET;			
+   m_HintsAddrInfo.ai_family = AF_INET;
    /* SOCK_STREAM is used to specify a stream socket. */
    m_HintsAddrInfo.ai_socktype = SOCK_STREAM;
    /* IPPROTO_TCP is used to specify the TCP protocol. */
@@ -147,7 +154,7 @@ bool CTCPClient::Connect(const std::string& strServer, const std::string& strPor
    // Fixes windows 0.2 second delay sending (buffering) data.
    int on = 1;
    int iErr;
-   
+
    iErr = setsockopt(m_ConnectSocket, IPPROTO_TCP, TCP_NODELAY, (char*)&on, sizeof(on));
    if (iErr == INVALID_SOCKET)
    {
@@ -159,10 +166,10 @@ bool CTCPClient::Connect(const std::string& strServer, const std::string& strPor
 
       return false;
    }
-   
+
    /*
    SOCKET ConnectSocket = INVALID_SOCKET;
-   struct sockaddr_in clientService; 
+   struct sockaddr_in clientService;
 
    ConnectSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
    if (ConnectSocket == INVALID_SOCKET) {
@@ -202,7 +209,7 @@ bool CTCPClient::Connect(const std::string& strServer, const std::string& strPor
             //Sleep(1000);
       //}
    //} while (iResult == SOCKET_ERROR && ++uRetry < m_uRetryCount);
-   
+
    freeaddrinfo(m_pResultAddrInfo);
    m_pResultAddrInfo = nullptr;
 
@@ -252,9 +259,14 @@ bool CTCPClient::Connect(const std::string& strServer, const std::string& strPor
       int iConRet = connect(m_ConnectSocket, pResPtr->ai_addr, pResPtr->ai_addrlen);
       if (iConRet >= 0) // or != -1
       {
+         int on = 1;
+         if (setsockopt(m_ConnectSocket, IPPROTO_TCP, TCP_NODELAY, (char*)&on, sizeof(on)) < 0) {
+             if (m_eSettingsFlags & ENABLE_LOG)
+                 m_oLog("[TCPClient][Error] Socket error in call to setsockopt");
+         }
          /* Success */
          m_eStatus = CONNECTED;
-         
+
          if (m_pResultAddrInfo != nullptr)
          {
             freeaddrinfo(m_pResultAddrInfo);
@@ -291,7 +303,7 @@ bool CTCPClient::Send(const char* pData, const size_t uSize) const
    {
       if (m_eSettingsFlags & ENABLE_LOG)
          m_oLog("[TCPClient][Error] send failed : not connected to a server.");
-      
+
       return false;
    }
 
@@ -312,7 +324,7 @@ bool CTCPClient::Send(const char* pData, const size_t uSize) const
       }
       total += nSent;
    } while(total < uSize);
-   
+
    return true;
 }
 
@@ -326,20 +338,39 @@ bool CTCPClient::Send(const std::vector<char>& Data) const
    return Send(Data.data(), Data.size());
 }
 
-/* ret > 0   : bytes received
- * ret == 0  : connection closed
- * ret < 0   : recv failed
+bool CTCPClient::SetRxBlocking(bool enable) {
+#ifdef WINDOWS
+    unsigned long mode = enable ? 0 : 1;
+    return (ioctlsocket(m_ConnectSocket, FIONBIO, &mode) == 0);
+#else
+   int flags = fcntl(m_ConnectSocket, F_GETFL, 0);
+   if (flags == -1)
+      return false;
+   flags = enable ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK);
+   return (fcntl(m_ConnectSocket, F_SETFL, flags) == 0);
+#endif
+}
+
+/**
+ * @brief Receives data from the TCP socket.
+ *
+ * Supports both blocking and non-blocking modes based on the socket configuration.
+ * In non-blocking mode, returns 0 if no data is currently available.
+ *
+ * @param pData Pointer to the buffer to store received data
+ * @param uSize Number of bytes to receive
+ * @param bReadFully If true, loops until uSize is reached (in blocking mode)
+ * @return int Number of bytes received, -2 if peer closed, -1 on error
  */
 int CTCPClient::Receive(char* pData, const size_t uSize, bool bReadFully /*= true*/) const
 {
    if (!pData || !uSize)
-      return -2;
+      return -3;
 
    if (m_eStatus != CONNECTED)
    {
       if (m_eSettingsFlags & ENABLE_LOG)
-         m_oLog("[TCPClient][Error] recv failed : not connected to a server.");
-
+         m_oLog("[TCPClient][Error] recv failed: not connected to a server.");
       return -1;
    }
 
@@ -347,40 +378,63 @@ int CTCPClient::Receive(char* pData, const size_t uSize, bool bReadFully /*= tru
    int tries = 0;
    #endif
 
+   int flags = 0;
+   if (m_bPeek)
+      flags |= MSG_PEEK;
+
    size_t total = 0;
    do
    {
-      int nRecvd = recv(m_ConnectSocket, pData + total, uSize - total, 0);
+      int nRecvd = recv(m_ConnectSocket, pData + total, uSize - total, flags);
+
+      if (nRecvd < 0) {
+         #ifdef WINDOWS
+         int lastError = WSAGetLastError();
+
+         if (lastError == WSAEWOULDBLOCK) {
+            return (int)total;
+         }
+         // On long messages, Windows recv sometimes fails with WSAENOBUFS, but
+         // will work if you try again.
+         if (lastError == WSAENOBUFS)
+         {
+            if (tries++ < 1000)
+            {
+               Sleep(1);
+               continue;
+            }
+         }
+         #else
+         if (errno == EAGAIN || errno == EWOULDBLOCK) {
+             return (int)total;
+         }
+         #endif
+
+         if (m_eSettingsFlags & ENABLE_LOG) {
+            #ifdef WINDOWS
+            m_oLog("[TCPClient][Error] Socket error in call to recv (Windows Error: " + std::to_string(WSAGetLastError()) + ")");
+            #else
+            m_oLog("[TCPClient][Error] Socket error in call to recv (errno: " + std::string(strerror(errno)) + ")");
+            #endif
+         }
+
+         return -1;
+      }
 
       if (nRecvd == 0)
       {
-         // peer shut down
-         break;
+         // Peer shut down
+         return -2;
       }
-      
-      #ifdef WINDOWS
-      if ((nRecvd < 0) && (WSAGetLastError() == WSAENOBUFS))
-      {
-         // On long messages, Windows recv sometimes fails with WSAENOBUFS, but
-         // will work if you try again.
-         if ((tries++ < 1000))
-         {
-           Sleep(1);
-           continue;
-         }
-
-         if (m_eSettingsFlags & ENABLE_LOG)
-            m_oLog("[TCPClient][Error] Socket error in call to recv.");
-
-         break;
-      }
-      #endif
 
       total += nRecvd;
 
+      if (m_bPeek)
+         break;
+
    } while (bReadFully && (total < uSize));
-   
-   return total;
+
+   return (int)total;
 }
 
 bool CTCPClient::Disconnect()
@@ -397,7 +451,7 @@ bool CTCPClient::Disconnect()
    {
       if (m_eSettingsFlags & ENABLE_LOG)
          m_oLog(StringFormat("[TCPClient][Error] shutdown failed : %d", WSAGetLastError()));
-      
+
       return false;
    }
    closesocket(m_ConnectSocket);

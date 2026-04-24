@@ -7,15 +7,16 @@
 #include "renode_bus.h"
 #include "communication/socket_channel.h"
 #include "src/renode.h"
-static RenodeAgent* renodeAgent;
+#include "src/renode_log.h"
 
+static RenodeAgent* renodeAgent;
 #define IO_THREADS 1
 
 //=================================================
 // RenodeAgent
 //=================================================
 
-RenodeAgent::RenodeAgent() { }
+RenodeAgent::RenodeAgent(bool rxBlocking) : rxBlocking(rxBlocking) { }
 
 void RenodeAgent::addBus(BaseBus* bus)
 {
@@ -83,6 +84,7 @@ uint64_t RenodeAgent::requestDoubleWordFromAgent(uint64_t addr)
 
 void RenodeAgent::pushToAgent(Action action, uint64_t addr, uint64_t value)
 {
+    LOG_FUNC("V-SIM");
     communicationChannel->sendSender(Protocol(action, addr, value));
     Protocol* received = communicationChannel->receive();
     while (received->actionId != pushConfirmation)
@@ -96,6 +98,7 @@ void RenodeAgent::pushToAgent(Action action, uint64_t addr, uint64_t value)
 
 uint64_t RenodeAgent::requestFromAgent(Action action, uint64_t addr)
 {
+    LOG_FUNC("V-SIM");
     communicationChannel->sendSender(Protocol(action, addr, 0));
     Protocol* received = communicationChannel->receive();
     while (received->actionId != writeRequest)
@@ -135,6 +138,7 @@ void RenodeAgent::reset()
 
 void RenodeAgent::fatalError()
 {
+    LOG_FUNC("V-SIM");
     communicationChannel->sendSender(Protocol(error, 0, 0));
     handleDisconnect();
 }
@@ -163,6 +167,7 @@ void RenodeAgent::registerInterrupt(uint8_t *irq, uint8_t irq_addr)
 {
     if (irq == nullptr) {
         log(LOG_LEVEL_ERROR, "The irq address cannot be null");
+        LOG_FUNC("V-SIM");
         communicationChannel->sendMain(Protocol(error, 0, 0));
         return;
     }
@@ -174,6 +179,7 @@ void RenodeAgent::handleInterrupts(void)
 {
     for (unsigned long i = 0; i < interrupts.size(); i++) {
         if (*interrupts[i].irq != interrupts[i].prev_irq) {
+            LOG_FUNC("V-SIM");
             communicationChannel->sendSender(Protocol(interrupt, interrupts[i].irq_addr, *interrupts[i].irq));
             interrupts[i].prev_irq = *interrupts[i].irq;
         }
@@ -183,9 +189,11 @@ void RenodeAgent::handleInterrupts(void)
 void RenodeAgent::connect(int receiverPort, int senderPort, const char* address)
 {
     renodeAgent = this;
-    SocketCommunicationChannel* channel = new SocketCommunicationChannel();
-    communicationChannel = channel;
-    channel->connect(receiverPort, senderPort, address);
+    if (!communicationChannel) {
+        SocketCommunicationChannel* channel = new SocketCommunicationChannel();
+        communicationChannel = channel;
+        channel->connect(receiverPort, senderPort, address);
+    }
 }
 
 void RenodeAgent::connectNative()
@@ -206,8 +214,40 @@ void RenodeAgent::simulate()
     }
 }
 
+/**
+ * @brief Processes non-bus protocol messages (Ticks/Resets/Logs) from Renode Server
+ * This function is non-blocking to allow for Verilog continuation. It handles
+ * system-level messages while leaving bus transactions for the Verilog renodeDPI handlers
+ * Note: see renodeDPIReceive for an inverse filtering
+ */
+bool RenodeAgent::simulate(NonBus)
+{
+    SocketCommunicationChannel*
+    socketChannel = dynamic_cast<SocketCommunicationChannel*>(communicationChannel);
+    socketChannel->setPeek(true);
+    Protocol *p = receive();
+    socketChannel->setPeek(false);
+
+    if (p->actionId == invalidAction ||
+        p->actionId == interrupt ||
+        (p->actionId >= readRequestByte && p->actionId <= writeRequestQuadWord))
+    {
+        delete p;
+        return false;
+    }
+
+    Protocol* req = receive();
+    handleRequest(req);
+    delete req;
+    delete p;
+    return true;
+}
+
 void RenodeAgent::handleRequest(Protocol* request)
 {
+    if (request->actionId != invalidAction) {
+        LOG_ARGS("V-SIM", request->actionId, request->addr , request->value, request->peripheralIndex);
+    }
     switch(request->actionId) {
         case invalidAction:
             break;
@@ -266,8 +306,18 @@ void RenodeAgent::handleDisconnect()
 {
     SocketCommunicationChannel* channel;
     if((channel = dynamic_cast<SocketCommunicationChannel*>(communicationChannel)) != nullptr) {
+        LOG_FUNC("V-SIM");
         communicationChannel->sendSender(Protocol(ok, 0, 0));
         channel->disconnect();
+    }
+}
+
+void RenodeAgent::syncChannel(SocketCommunicationChannel* channel)
+{
+    if (!communicationChannel) {
+        if (rxBlocking == false)
+            channel->setRxBlocking(false);
+        communicationChannel = channel;
     }
 }
 
@@ -317,6 +367,7 @@ Protocol* NativeCommunicationChannel::receive()
 
 void initialize_native()
 {
+    LOG_FUNC("V-SIM");
     renodeAgent = Init();
 }
 

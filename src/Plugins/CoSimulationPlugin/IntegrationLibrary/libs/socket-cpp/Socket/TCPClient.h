@@ -68,6 +68,9 @@ public:
 
    Socket GetSocketDescriptor() const { return m_ConnectSocket; }
 
+   void SetPeek(bool enable) { m_bPeek = enable; }
+   bool SetRxBlocking(bool enable);
+
 protected:
    enum SocketStatus
    {
@@ -82,6 +85,7 @@ protected:
 
    struct addrinfo* m_pResultAddrInfo;
    struct addrinfo  m_HintsAddrInfo;
+   bool m_bPeek;
 };
 
 #endif

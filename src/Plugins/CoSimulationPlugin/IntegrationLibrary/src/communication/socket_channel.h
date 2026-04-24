@@ -16,11 +16,14 @@ public:
   void connect(int receiverPort, int senderPort, const char* address);
   void disconnect();
   bool isConnected() override;
-  void handshakeValid();
+  bool handshakeValid();
   void log(int logLevel, const char* data) override;
   Protocol* receive() override;
   void sendMain(const Protocol message) override;
   void sendSender(const Protocol message) override;
+  void setPeek(bool enable) { mainSocket->SetPeek(enable); }
+  void setRxBlocking(bool enable) { mainSocket->SetRxBlocking(enable); }
+  int getSocketDescriptor() { return (int)mainSocket->GetSocketDescriptor(); }
 
 private:
   bool connected;

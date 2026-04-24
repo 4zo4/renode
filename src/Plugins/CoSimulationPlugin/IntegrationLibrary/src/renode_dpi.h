@@ -8,8 +8,11 @@
 #define RENODE_DPI_H
 #include "renode.h"
 
+class SocketCommunicationChannel;
+
 extern "C"
 {
+  SocketCommunicationChannel *renodeDPIGetSocketChannel();
   void renodeDPIConnect(int receiverPort, int senderPort, const char *address);
   void renodeDPIDisconnect();
   bool renodeDPIIsConnected();

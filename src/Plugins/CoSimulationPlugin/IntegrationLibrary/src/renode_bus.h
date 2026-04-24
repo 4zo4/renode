@@ -9,7 +9,7 @@
 #include <memory>
 #include <vector>
 
-#include "../../../../Infrastructure/src/Emulator/Cores/renode/include/renode_imports.h"
+#include "renode_imports.h"
 #include "src/renode.h"
 #include "src/buses/bus.h"
 #include "src/communication/communication_channel.h"
@@ -18,7 +18,9 @@ class BaseBus;
 class BaseInitiatorBus;
 class BaseTargetBus;
 class RenodeAgent;
+class SocketCommunicationChannel;
 struct Protocol;
+struct NonBus {};
 
 extern RenodeAgent* Init(); //definition has to be provided in sim_main.cpp of cosimulated peripheral
 
@@ -32,7 +34,7 @@ extern "C"
 class RenodeAgent
 {
 public:
-  RenodeAgent();
+  RenodeAgent(bool rxBlocking = true);
   virtual void addBus(BaseInitiatorBus* bus);
   virtual void addBus(BaseTargetBus* bus);
   virtual void writeToBus(int width, uint64_t addr, uint64_t value);
@@ -55,7 +57,9 @@ public:
   virtual void connect(int receiverPort, int senderPort, const char* address);
   virtual void connectNative();
   virtual void simulate();
+  virtual bool simulate(NonBus);
   virtual void handleRequest(Protocol* request);
+  virtual void syncChannel(SocketCommunicationChannel* channel);
 
   std::vector<std::unique_ptr<BaseTargetBus>> targetInterfaces;
   std::vector<std::unique_ptr<BaseInitiatorBus>> initatorInterfaces;
@@ -68,6 +72,7 @@ protected:
     uint8_t irq_addr;
   };
 
+  bool rxBlocking;
   std::vector<Interrupt> interrupts;
   CommunicationChannel* communicationChannel;
   BaseBus* firstInterface;

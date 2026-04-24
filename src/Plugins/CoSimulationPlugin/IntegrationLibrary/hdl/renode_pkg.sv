@@ -110,7 +110,7 @@ package renode_pkg;
     function void connect(int receiver_port, int sender_port, string address);
       renodeDPIConnect(receiver_port, sender_port, address);
       if(is_connected())
-        $display("Renode at %t: Connected using the socket based interface", $realtime);
+        $display("[%t][V-LOG] Connected to %s on main socket: %0d sender socket: %0d", $realtime, address, receiver_port, sender_port);
       else
         $error("Renode at %t: Connection error", $realtime);
     endfunction

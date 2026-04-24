@@ -10,6 +10,10 @@
 import renode_pkg::renode_runtime, renode_pkg::bus_connection, renode_pkg::renode_connection, renode_pkg::no_peripheral_index;
 import renode_pkg::message_t, renode_pkg::address_t, renode_pkg::data_t, renode_pkg::valid_bits_e;
 
+`ifndef ENABLE_LOGS
+  `define ENABLE_LOGS 0
+`endif
+
 module renode #(
     int unsigned RenodeToCosimCount = 0,
     int unsigned CosimToRenodeCount = 0,
@@ -96,6 +100,11 @@ module renode #(
   task static handle_message(message_t message);
     bit is_handled;
 
+    if (message.action == renode_pkg::invalidAction) return;
+    if (`ENABLE_LOGS) begin
+      $display("[%t][V-LOG] Action: %s (%0d) | Addr: 0x%0h | Value: 0x%0h | Index: %0d", $realtime,
+        message.action.name(), message.action, message.address, message.data, message.peripheral_index);
+    end
     is_handled = 1;
     case (message.action)
       renode_pkg::resetPeripheral: reset();
